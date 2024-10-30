@@ -137,6 +137,7 @@ func (r *Router) Put(ctx context.Context, cm commitments.CommitmentMode, key, va
 		err = r.handleRedundantWrites(ctx, commit, value)
 		if err != nil {
 			log.Error("Failed to write to redundant backends", "err", err)
+			return nil, err
 		}
 	}
 
