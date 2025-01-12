@@ -99,6 +99,7 @@ func LoadStoreRouter(ctx context.Context, cfg CLIConfig, log log.Logger) (store.
 		if err != nil {
 			return nil, err
 		}
+		client.Client = NewEigenDAClientProxy(client.Client, log, s3Store, redisStore)
 
 		eigenDA, err = eigenda.NewStore(
 			client,
