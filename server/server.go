@@ -24,9 +24,10 @@ var (
 )
 
 const (
-	GetRoute = "/get/"
-	PutRoute = "/put/"
-	Put      = "put"
+	GetRoute      = "/get/"
+	GetExtraRoute = "/get_extra/"
+	PutRoute      = "/put/"
+	Put           = "put"
 
 	CommitmentModeKey = "commitment_mode"
 )
@@ -101,6 +102,7 @@ func (svr *Server) Start() error {
 
 	mux.HandleFunc(GetRoute, WithLogging(WithMetrics(svr.HandleGet, svr.m), svr.log))
 	mux.HandleFunc(PutRoute, WithLogging(WithMetrics(svr.HandlePut, svr.m), svr.log))
+	mux.HandleFunc(GetExtraRoute, WithLogging(WithMetrics(svr.HandleGetExtra, svr.m), svr.log))
 	mux.HandleFunc("/health", WithLogging(svr.Health, svr.log))
 
 	svr.httpServer.Handler = mux
