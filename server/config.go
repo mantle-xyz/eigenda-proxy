@@ -5,66 +5,35 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/Layr-Labs/eigenda-proxy/flags"
 	"github.com/Layr-Labs/eigenda-proxy/flags/eigendaflags"
+	"github.com/Layr-Labs/eigenda-proxy/metrics"
 	"github.com/Layr-Labs/eigenda-proxy/store"
 	"github.com/Layr-Labs/eigenda-proxy/store/generated_key/memstore"
-	"github.com/Layr-Labs/eigenda-proxy/store/precomputed_key/redis"
-	"github.com/Layr-Labs/eigenda-proxy/store/precomputed_key/s3"
-	"github.com/Layr-Labs/eigenda-proxy/utils"
 	"github.com/Layr-Labs/eigenda-proxy/verify"
 	"github.com/Layr-Labs/eigenda/api/clients"
-
-	opmetrics "github.com/ethereum-optimism/optimism/op-service/metrics"
 )
 
 type Config struct {
 	EdaClientConfig clients.EigenDAClientConfig
+	MemstoreConfig  memstore.Config
+	StorageConfig   store.Config
 	VerifierConfig  verify.Config
+	PutRetries      uint
 
 	MemstoreEnabled bool
-	MemstoreConfig  memstore.Config
-
-	// routing
-	FallbackTargets []string
-	CacheTargets    []string
-
-	// secondary storage
-	RedisConfig redis.Config
-	S3Config    s3.Config
 }
 
 // ReadConfig ... parses the Config from the provided flags or environment variables.
 func ReadConfig(ctx *cli.Context) Config {
+	edaClientConfig := eigendaflags.ReadConfig(ctx)
 	return Config{
-		RedisConfig:     redis.ReadConfig(ctx),
-		S3Config:        s3.ReadConfig(ctx),
-		EdaClientConfig: eigendaflags.ReadConfig(ctx),
-		VerifierConfig:  verify.ReadConfig(ctx),
+		EdaClientConfig: edaClientConfig,
+		VerifierConfig:  verify.ReadConfig(ctx, edaClientConfig),
+		PutRetries:      ctx.Uint(eigendaflags.PutRetriesFlagName),
 		MemstoreEnabled: ctx.Bool(memstore.EnabledFlagName),
 		MemstoreConfig:  memstore.ReadConfig(ctx),
-		FallbackTargets: ctx.StringSlice(flags.FallbackTargetsFlagName),
-		CacheTargets:    ctx.StringSlice(flags.CacheTargetsFlagName),
+		StorageConfig:   store.ReadConfig(ctx),
 	}
-}
-
-// checkTargets ... verifies that a backend target slice is constructed correctly
-func (cfg *Config) checkTargets(targets []string) error {
-	if len(targets) == 0 {
-		return nil
-	}
-
-	if utils.ContainsDuplicates(targets) {
-		return fmt.Errorf("duplicate targets provided: %+v", targets)
-	}
-
-	for _, t := range targets {
-		if store.StringToBackendType(t) == store.Unknown {
-			return fmt.Errorf("unknown fallback target provided: %s", t)
-		}
-	}
-
-	return nil
 }
 
 // Check ... verifies that configuration values are adequately set
@@ -75,11 +44,27 @@ func (cfg *Config) Check() error {
 		}
 	}
 
+	// provide dummy values to eigenda client config. Since the client won't be called in this
+	// mode it doesn't matter.
+	if cfg.MemstoreEnabled {
+		cfg.EdaClientConfig.SvcManagerAddr = "0x0000000000000000000000000000000000000000"
+		cfg.EdaClientConfig.EthRpcUrl = "http://0.0.0.0:666"
+	}
+
+	if !cfg.MemstoreEnabled {
+		if cfg.EdaClientConfig.SvcManagerAddr == "" {
+			return fmt.Errorf("service manager address is required for communication with EigenDA")
+		}
+		if cfg.EdaClientConfig.EthRpcUrl == "" {
+			return fmt.Errorf("eth prc url is required for communication with EigenDA")
+		}
+	}
+
 	// cert verification is enabled
 	// TODO: move this verification logic to verify/cli.go
 	if cfg.VerifierConfig.VerifyCerts {
 		if cfg.MemstoreEnabled {
-			return fmt.Errorf("cannot enable cert verification when memstore is enabled")
+			return fmt.Errorf("cannot enable cert verification when memstore is enabled. use --%s", verify.CertVerificationDisabledFlagName)
 		}
 		if cfg.VerifierConfig.RPCURL == "" {
 			return fmt.Errorf("cert verification enabled but eth rpc is not set")
@@ -89,49 +74,18 @@ func (cfg *Config) Check() error {
 		}
 	}
 
-	if cfg.S3Config.CredentialType == s3.CredentialTypeUnknown && cfg.S3Config.Endpoint != "" {
-		return fmt.Errorf("s3 credential type must be set")
-	}
-	if cfg.S3Config.CredentialType == s3.CredentialTypeStatic {
-		if cfg.S3Config.Endpoint != "" && (cfg.S3Config.AccessKeyID == "" || cfg.S3Config.AccessKeySecret == "") {
-			return fmt.Errorf("s3 endpoint is set, but access key id or access key secret is not set")
-		}
-	}
-
-	if cfg.RedisConfig.Endpoint == "" && cfg.RedisConfig.Password != "" {
-		return fmt.Errorf("redis password is set, but endpoint is not")
-	}
-
-	err := cfg.checkTargets(cfg.FallbackTargets)
-	if err != nil {
-		return err
-	}
-
-	err = cfg.checkTargets(cfg.CacheTargets)
-	if err != nil {
-		return err
-	}
-
-	// verify that same target is not in both fallback and cache targets
-	for _, t := range cfg.FallbackTargets {
-		if utils.Contains(cfg.CacheTargets, t) {
-			return fmt.Errorf("target %s is in both fallback and cache targets", t)
-		}
-	}
-
-	return nil
+	return cfg.StorageConfig.Check()
 }
 
 type CLIConfig struct {
 	EigenDAConfig Config
-	MetricsCfg    opmetrics.CLIConfig
+	MetricsCfg    metrics.CLIConfig
 }
 
 func ReadCLIConfig(ctx *cli.Context) CLIConfig {
-	config := ReadConfig(ctx)
 	return CLIConfig{
-		EigenDAConfig: config,
-		MetricsCfg:    opmetrics.ReadCLIConfig(ctx),
+		EigenDAConfig: ReadConfig(ctx),
+		MetricsCfg:    metrics.ReadCLIConfig(ctx),
 	}
 }
 

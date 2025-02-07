@@ -5,39 +5,49 @@ import (
 	"encoding/json"
 	"fmt"
 
+	proxy_logging "github.com/Layr-Labs/eigenda-proxy/logging"
+	"github.com/Layr-Labs/eigensdk-go/logging"
+
 	"github.com/Layr-Labs/eigenda-proxy/flags"
 	"github.com/Layr-Labs/eigenda-proxy/metrics"
 	"github.com/Layr-Labs/eigenda-proxy/server"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/urfave/cli/v2"
 
 	"github.com/ethereum-optimism/optimism/op-service/ctxinterrupt"
-	oplog "github.com/ethereum-optimism/optimism/op-service/log"
 )
 
 func StartProxySvr(cliCtx *cli.Context) error {
-	log := oplog.NewLogger(oplog.AppOut(cliCtx), oplog.ReadCLIConfig(cliCtx)).New("role", "eigenda_proxy")
-	oplog.SetGlobalLogHandler(log.Handler())
+	logCfg, err := proxy_logging.ReadLoggerCLIConfig(cliCtx)
+	if err != nil {
+		return err
+	}
+
+	log, err := proxy_logging.NewLogger(*logCfg)
+	if err != nil {
+		return err
+	}
+
 	log.Info("Starting EigenDA Proxy Server", "version", Version, "date", Date, "commit", Commit)
 
 	cfg := server.ReadCLIConfig(cliCtx)
 	if err := cfg.Check(); err != nil {
 		return err
 	}
-	err := prettyPrintConfig(cliCtx, log)
+	err = prettyPrintConfig(cliCtx, log)
 	if err != nil {
 		return fmt.Errorf("failed to pretty print config: %w", err)
 	}
 
+	m := metrics.NewMetrics("default")
+
 	ctx, ctxCancel := context.WithCancel(cliCtx.Context)
 	defer ctxCancel()
 
-	daRouter, err := server.LoadStoreRouter(ctx, cfg, log)
+	sm, err := server.LoadStoreManager(ctx, cfg, log, m)
 	if err != nil {
 		return fmt.Errorf("failed to create store: %w", err)
 	}
-	m := metrics.NewMetrics("default")
-	server := server.NewServer(cliCtx.String(flags.ListenAddrFlagName), cliCtx.Int(flags.PortFlagName), daRouter, log, m)
+	server := server.NewServer(cliCtx.String(flags.ListenAddrFlagName), cliCtx.Int(flags.PortFlagName), sm, log, m)
 
 	if err := server.Start(); err != nil {
 		return fmt.Errorf("failed to start the DA server: %w", err)
@@ -72,17 +82,20 @@ func StartProxySvr(cliCtx *cli.Context) error {
 }
 
 // TODO: we should probably just change EdaClientConfig struct definition in eigenda-client
-// to have a `json:"-"` tag on the SignerPrivateKeyHex field, to prevent the privateKey from being marshaled at all
-func prettyPrintConfig(cliCtx *cli.Context, log log.Logger) error {
+func prettyPrintConfig(cliCtx *cli.Context, log logging.Logger) error {
 	// we read a new config which we modify to hide private info in order to log the rest
 	cfg := server.ReadCLIConfig(cliCtx)
-	cfg.EigenDAConfig.EdaClientConfig.SignerPrivateKeyHex = "HIDDEN"
-	cfg.EigenDAConfig.VerifierConfig.RPCURL = "HIDDEN"
+	if cfg.EigenDAConfig.EdaClientConfig.SignerPrivateKeyHex != "" {
+		cfg.EigenDAConfig.EdaClientConfig.SignerPrivateKeyHex = "*****" // marshaling defined in client config
+	}
+	if cfg.EigenDAConfig.EdaClientConfig.EthRpcUrl != "" {
+		cfg.EigenDAConfig.EdaClientConfig.EthRpcUrl = "*****" // hiding as RPC providers typically use sensitive API keys within
+	}
 
 	configJSON, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	log.Info(fmt.Sprintf("Initializing EigenDA proxy server with config: %v", string(configJSON)))
+	log.Info(fmt.Sprintf("Initializing EigenDA proxy server with config (\"*****\" fields are hidden): %v", string(configJSON)))
 	return nil
 }

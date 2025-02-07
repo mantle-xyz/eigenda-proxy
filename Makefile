@@ -11,8 +11,7 @@ LDFLAGSSTRING +=-X main.Date=$(BUILD_TIME)
 LDFLAGSSTRING +=-X main.Version=$(GIT_TAG)
 LDFLAGS := -ldflags "$(LDFLAGSSTRING)"
 
-E2ETEST = INTEGRATION=true go test -timeout 1m ./e2e -parallel 4 -deploy-config ../.devnet/devnetL1.json
-HOLESKYTEST = TESTNET=true go test -timeout 50m ./e2e  -parallel 4 -deploy-config ../.devnet/devnetL1.json
+E2EFUZZTEST = FUZZ=true go test ./e2e -fuzz -v -fuzztime=15m
 
 .PHONY: eigenda-proxy
 eigenda-proxy:
@@ -23,24 +22,8 @@ docker-build:
 	# we only use this to build the docker image locally, so we give it the dev tag as a reminder
 	@docker build -t ghcr.io/layr-labs/eigenda-proxy:dev .
 
-run-minio:
-	docker run -p 4566:9000 -d -e "MINIO_ROOT_USER=minioadmin" -e "MINIO_ROOT_PASSWORD=minioadmin" --name minio minio/minio server /data
-
-run-redis:
-	docker run -p 9001:6379 -d --name redis redis
-
-stop-minio:
-	@if [ -n "$$(docker ps -q -f name=minio)" ]; then \
-		docker stop minio && docker rm minio; \
-	fi
-
-stop-redis:
-	@if [ -n "$$(docker ps -q -f name=redis)" ]; then \
-		docker stop redis && docker rm redis; \
-	fi
-
 run-memstore-server:
-	./bin/eigenda-proxy --memstore.enabled
+	./bin/eigenda-proxy --memstore.enabled --eigenda.cert-verification-disabled --eigenda.eth-rpc http://localhost:8545 --eigenda.svc-manager-addr 0x123 --metrics.enabled
 
 disperse-test-blob:
 	curl -X POST -d my-blob-content http://127.0.0.1:3100/put/
@@ -48,18 +31,21 @@ disperse-test-blob:
 clean:
 	rm bin/eigenda-proxy
 
+# Unit tests
 test:
 	go test ./... -parallel 4 
 
-e2e-test: stop-minio stop-redis run-minio run-redis
-	$(E2ETEST) && \
-	make stop-minio && \
-	make stop-redis
+# E2E tests, leveraging op-e2e
+e2e-test:
+	INTEGRATION=true go test -timeout 1m ./e2e -parallel 4
 
-holesky-test: stop-minio stop-redis run-minio run-redis
-	$(HOLESKYTEST) && \
-	make stop-minio && \
-	make stop-redis
+# E2E test which fuzzes the proxy client server integration and op client keccak256 with malformed inputs
+e2e-fuzz-test:
+	$(E2EFUZZTEST)
+
+# E2E tests against holesky testnet
+holesky-test:
+	TESTNET=true go test -timeout 50m ./e2e  -parallel 4
 
 .PHONY: lint
 lint:
@@ -85,16 +71,12 @@ install-lint:
 	@echo "Installing golangci-lint..."
 	@sh -c $(GET_LINT_CMD)
 
-gosec:
-	@echo "Running security scan with gosec..."
-	gosec ./...
-
-submodules:
-	git submodule update --init --recursive
-
 op-devnet-allocs:
 	@echo "Generating devnet allocs..."
 	@./scripts/op-devnet-allocs.sh
+
+benchmark:
+	go test -benchmem -run=^$ -bench . ./e2e -test.parallel 4
 
 .PHONY: \
 	clean \

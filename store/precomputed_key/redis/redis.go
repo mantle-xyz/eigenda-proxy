@@ -2,11 +2,12 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
-	"github.com/Layr-Labs/eigenda-proxy/store"
+	"github.com/Layr-Labs/eigenda-proxy/common"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -16,21 +17,30 @@ type Config struct {
 	Password string
 	DB       int
 	Eviction time.Duration
-	Profile  bool
 }
 
-// Store ... Redis storage backend implementation (This not safe for concurrent usage)
+// Custom MarshalJSON function to control what gets included in the JSON output.
+// TODO: Probably best would be to separate config from secrets everywhere.
+// Then we could just log the config and not worry about secrets.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type Alias Config // Use an alias to avoid recursion with MarshalJSON
+	aux := (Alias)(c)
+	// Conditionally include a masked password if it is set
+	if aux.Password != "" {
+		aux.Password = "*****"
+	}
+	return json.Marshal(aux)
+}
+
+// Store ... Redis storage backend implementation
+// go-redis client is safe for concurrent usage: https://github.com/redis/go-redis/blob/v8.11.5/redis.go#L535-L544
 type Store struct {
 	eviction time.Duration
 
 	client *redis.Client
-
-	profile bool
-	reads   int
-	entries int
 }
 
-var _ store.PrecomputedKeyStore = (*Store)(nil)
+var _ common.PrecomputedKeyStore = (*Store)(nil)
 
 // NewStore ... constructor
 func NewStore(cfg *Config) (*Store, error) {
@@ -52,8 +62,6 @@ func NewStore(cfg *Config) (*Store, error) {
 	return &Store{
 		eviction: cfg.Eviction,
 		client:   client,
-		profile:  cfg.Profile,
-		reads:    0,
 	}, nil
 }
 
@@ -67,35 +75,19 @@ func (r *Store) Get(ctx context.Context, key []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	if r.profile {
-		r.reads++
-	}
-
 	// cast value to byte slice
 	return []byte(value), nil
 }
 
 // Put ... inserts a value into the Redis store
 func (r *Store) Put(ctx context.Context, key []byte, value []byte) error {
-	err := r.client.Set(ctx, string(key), string(value), r.eviction).Err()
-	if err == nil && r.profile {
-		r.entries++
-	}
-
-	return err
+	return r.client.Set(ctx, string(key), string(value), r.eviction).Err()
 }
 
-func (r *Store) Verify(_ []byte, _ []byte) error {
+func (r *Store) Verify(_ context.Context, _, _ []byte) error {
 	return nil
 }
 
-func (r *Store) BackendType() store.BackendType {
-	return store.RedisBackendType
-}
-
-func (r *Store) Stats() *store.Stats {
-	return &store.Stats{
-		Entries: r.entries,
-		Reads:   r.reads,
-	}
+func (r *Store) BackendType() common.BackendType {
+	return common.RedisBackendType
 }

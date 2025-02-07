@@ -4,28 +4,23 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/Layr-Labs/eigenda-proxy/utils"
-	"github.com/Layr-Labs/eigenda/encoding/kzg"
 	"github.com/urfave/cli/v2"
+
+	"github.com/Layr-Labs/eigenda-proxy/common"
+	"github.com/Layr-Labs/eigenda/api/clients"
+	"github.com/Layr-Labs/eigenda/encoding/kzg"
 )
 
-var (
+const (
 	BytesPerSymbol     = 31
 	MaxCodingRatio     = 8
-	MaxSRSPoints       = 1 << 28 // 2^28
-	MaxAllowedBlobSize = uint64(MaxSRSPoints * BytesPerSymbol / MaxCodingRatio)
+	SrsOrder           = 1 << 28 // 2^28
+	MaxAllowedBlobSize = uint64(SrsOrder * BytesPerSymbol / MaxCodingRatio)
 )
-
-// TODO: should this live in the resources pkg?
-// So that if we ever change the SRS files there we can change this value
-const srsOrder = 268435456 // 2 ^ 32
 
 var (
 	// cert verification flags
 	CertVerificationDisabledFlagName = withFlagPrefix("cert-verification-disabled")
-	EthRPCFlagName                   = withFlagPrefix("eth-rpc")
-	SvcManagerAddrFlagName           = withFlagPrefix("svc-manager-addr")
-	EthConfirmationDepthFlagName     = withFlagPrefix("eth-confirmation-depth")
 
 	// kzg flags
 	G1PathFlagName         = withFlagPrefix("g1-path")
@@ -53,25 +48,6 @@ func CLIFlags(envPrefix, category string) []cli.Flag {
 			Usage:    "Whether to verify certificates received from EigenDA disperser.",
 			EnvVars:  []string{withEnvPrefix(envPrefix, "CERT_VERIFICATION_DISABLED")},
 			Value:    false,
-			Category: category,
-		},
-		&cli.StringFlag{
-			Name:     EthRPCFlagName,
-			Usage:    "JSON RPC node endpoint for the Ethereum network used for finalizing DA blobs. See available list here: https://docs.eigenlayer.xyz/eigenda/networks/",
-			EnvVars:  []string{withEnvPrefix(envPrefix, "ETH_RPC")},
-			Category: category,
-		},
-		&cli.StringFlag{
-			Name:     SvcManagerAddrFlagName,
-			Usage:    "The deployed EigenDA service manager address. The list can be found here: https://github.com/Layr-Labs/eigenlayer-middleware/?tab=readme-ov-file#current-mainnet-deployment",
-			EnvVars:  []string{withEnvPrefix(envPrefix, "SERVICE_MANAGER_ADDR")},
-			Category: category,
-		},
-		&cli.Uint64Flag{
-			Name:     EthConfirmationDepthFlagName,
-			Usage:    "The number of Ethereum blocks to wait before considering a submitted blob's DA batch submission confirmed. `0` means wait for inclusion only.",
-			EnvVars:  []string{withEnvPrefix(envPrefix, "ETH_CONFIRMATION_DEPTH")},
-			Value:    0,
 			Category: category,
 		},
 		// kzg flags
@@ -113,7 +89,7 @@ func CLIFlags(envPrefix, category string) []cli.Flag {
 			HasBeenSet: true,
 			Action: func(_ *cli.Context, maxBlobLengthStr string) error {
 				// parse the string to a uint64 and set the maxBlobLengthBytes var to be used by ReadConfig()
-				numBytes, err := utils.ParseBytesAmount(maxBlobLengthStr)
+				numBytes, err := common.ParseBytesAmount(maxBlobLengthStr)
 				if err != nil {
 					return fmt.Errorf("failed to parse max blob length flag: %w", err)
 				}
@@ -133,25 +109,30 @@ func CLIFlags(envPrefix, category string) []cli.Flag {
 	}
 }
 
+// MaxBlobLengthBytes ... there's def a better way to deal with this... perhaps a generic flag that can parse the string into a uint64?
 // this var is set by the action in the MaxBlobLengthFlagName flag
-// TODO: there's def a better way to deal with this... perhaps a generic flag that can parse the string into a uint64?
 var MaxBlobLengthBytes uint64
 
-func ReadConfig(ctx *cli.Context) Config {
+// ReadConfig takes an eigendaClientConfig as input because the verifier config
+// reuses some configs that are also used by the eigenda client.
+// Not sure if urfave has a way to do flag aliases so opted for this approach.
+func ReadConfig(ctx *cli.Context, edaClientConfig clients.EigenDAClientConfig) Config {
 	kzgCfg := &kzg.KzgConfig{
 		G1Path:          ctx.String(G1PathFlagName),
 		G2PowerOf2Path:  ctx.String(G2PowerOf2PathFlagName),
 		CacheDir:        ctx.String(CachePathFlagName),
-		SRSOrder:        srsOrder,
+		SRSOrder:        SrsOrder,
 		SRSNumberToLoad: MaxBlobLengthBytes / 32,       // # of fr.Elements
 		NumWorker:       uint64(runtime.GOMAXPROCS(0)), // #nosec G115
 	}
 
 	return Config{
-		KzgConfig:            kzgCfg,
-		VerifyCerts:          !ctx.Bool(CertVerificationDisabledFlagName),
-		RPCURL:               ctx.String(EthRPCFlagName),
-		SvcManagerAddr:       ctx.String(SvcManagerAddrFlagName),
-		EthConfirmationDepth: uint64(ctx.Int64(EthConfirmationDepthFlagName)), // #nosec G115
+		KzgConfig:   kzgCfg,
+		VerifyCerts: !ctx.Bool(CertVerificationDisabledFlagName),
+		// reuse some configs from the eigenda client
+		RPCURL:               edaClientConfig.EthRpcUrl,
+		SvcManagerAddr:       edaClientConfig.SvcManagerAddr,
+		EthConfirmationDepth: edaClientConfig.WaitForConfirmationDepth,
+		WaitForFinalization:  edaClientConfig.WaitForFinalization,
 	}
 }

@@ -8,19 +8,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
 
-	"github.com/Layr-Labs/eigenda-proxy/store"
+	"github.com/Layr-Labs/eigenda-proxy/common"
 	"github.com/Layr-Labs/eigenda-proxy/verify"
 	"github.com/Layr-Labs/eigenda/api/clients/codecs"
-	"github.com/Layr-Labs/eigenda/api/grpc/common"
+	eigenda_common "github.com/Layr-Labs/eigenda/api/grpc/common"
 	"github.com/Layr-Labs/eigenda/api/grpc/disperser"
+	"github.com/Layr-Labs/eigensdk-go/logging"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const (
 	DefaultPruneInterval = 500 * time.Millisecond
+	BytesPerFieldElement = 32
 )
 
 type Config struct {
@@ -40,7 +41,7 @@ type MemStore struct {
 	sync.RWMutex
 
 	config    Config
-	l         log.Logger
+	log       logging.Logger
 	keyStarts map[string]time.Time
 	store     map[string][]byte
 	verifier  *verify.Verifier
@@ -49,14 +50,14 @@ type MemStore struct {
 	reads int
 }
 
-var _ store.GeneratedKeyStore = (*MemStore)(nil)
+var _ common.GeneratedKeyStore = (*MemStore)(nil)
 
 // New ... constructor
 func New(
-	ctx context.Context, verifier *verify.Verifier, l log.Logger, config Config,
+	ctx context.Context, verifier *verify.Verifier, log logging.Logger, config Config,
 ) (*MemStore, error) {
 	store := &MemStore{
-		l:         l,
+		log:       log,
 		config:    config,
 		keyStarts: make(map[string]time.Time),
 		store:     make(map[string][]byte),
@@ -65,7 +66,7 @@ func New(
 	}
 
 	if store.config.BlobExpiration != 0 {
-		l.Info("memstore expiration enabled", "time", store.config.BlobExpiration)
+		log.Info("memstore expiration enabled", "time", store.config.BlobExpiration)
 		go store.pruningLoop(ctx)
 	}
 
@@ -82,7 +83,6 @@ func (e *MemStore) pruningLoop(ctx context.Context) {
 			return
 
 		case <-timer.C:
-			e.l.Debug("pruning expired blobs")
 			e.pruneExpired()
 		}
 	}
@@ -98,7 +98,7 @@ func (e *MemStore) pruneExpired() {
 			delete(e.keyStarts, commit)
 			delete(e.store, commit)
 
-			e.l.Info("blob pruned", "commit", commit)
+			e.log.Debug("blob pruned", "commit", commit)
 		}
 	}
 }
@@ -134,17 +134,17 @@ func (e *MemStore) Get(_ context.Context, commit []byte) ([]byte, error) {
 // Put inserts a value into the store.
 func (e *MemStore) Put(_ context.Context, value []byte) ([]byte, error) {
 	time.Sleep(e.config.PutLatency)
-	if uint64(len(value)) > e.config.MaxBlobSizeBytes {
-		return nil, fmt.Errorf("%w: blob length %d, max blob size %d", store.ErrProxyOversizedBlob, len(value), e.config.MaxBlobSizeBytes)
-	}
-
-	e.Lock()
-	defer e.Unlock()
-
 	encodedVal, err := e.codec.EncodeBlob(value)
 	if err != nil {
 		return nil, err
 	}
+
+	if uint64(len(encodedVal)) > e.config.MaxBlobSizeBytes {
+		return nil, fmt.Errorf("%w: blob length %d, max blob size %d", common.ErrProxyOversizedBlob, len(value), e.config.MaxBlobSizeBytes)
+	}
+
+	e.Lock()
+	defer e.Unlock()
 
 	commitment, err := e.verifier.Commit(encodedVal)
 	if err != nil {
@@ -164,11 +164,11 @@ func (e *MemStore) Put(_ context.Context, value []byte) ([]byte, error) {
 
 	cert := &verify.Certificate{
 		BlobHeader: &disperser.BlobHeader{
-			Commitment: &common.G1Commitment{
+			Commitment: &eigenda_common.G1Commitment{
 				X: commitment.X.Marshal(),
 				Y: commitment.Y.Marshal(),
 			},
-			DataLength: uint32(len(encodedVal)), // #nosec G115
+			DataLength: uint32((len(encodedVal) + BytesPerFieldElement - 1) / BytesPerFieldElement), // #nosec G115
 			BlobQuorumParams: []*disperser.BlobQuorumParam{
 				{
 					QuorumNumber:                    1,
@@ -218,20 +218,10 @@ func (e *MemStore) Put(_ context.Context, value []byte) ([]byte, error) {
 	return certBytes, nil
 }
 
-func (e *MemStore) Verify(_, _ []byte) error {
+func (e *MemStore) Verify(_ context.Context, _, _ []byte) error {
 	return nil
 }
 
-// Stats ... returns the current usage metrics of the in-memory key-value data store.
-func (e *MemStore) Stats() *store.Stats {
-	e.RLock()
-	defer e.RUnlock()
-	return &store.Stats{
-		Entries: len(e.store),
-		Reads:   e.reads,
-	}
-}
-
-func (e *MemStore) BackendType() store.BackendType {
-	return store.MemoryBackendType
+func (e *MemStore) BackendType() common.BackendType {
+	return common.MemoryBackendType
 }
