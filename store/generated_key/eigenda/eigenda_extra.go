@@ -69,7 +69,7 @@ func (c *EigenDAClientProxy) GetBlobStatus(ctx context.Context, key []byte) (*di
 				c.log.Error("panic in cache extra info", "error", r)
 			}
 		}()
-		if reply.Status == disperser_rpc.BlobStatus_CONFIRMED || reply.Status == disperser_rpc.BlobStatus_FINALIZED {
+		if reply != nil && reply.Status == disperser_rpc.BlobStatus_CONFIRMED || reply.Status == disperser_rpc.BlobStatus_FINALIZED {
 			cert := (*verify.Certificate)(reply.Info)
 			bytes, err := ExtraInfo(key)
 			extraKey := ExtraKey(cert.BlobVerificationProof.BatchMetadata.BatchHeaderHash, cert.BlobVerificationProof.BlobIndex)
