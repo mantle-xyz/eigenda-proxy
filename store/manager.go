@@ -137,6 +137,7 @@ func (m *Manager) Put(ctx context.Context, cm commitments.CommitmentMode, key, v
 		err := m.secondary.HandleRedundantWrites(ctx, commit, value)
 		if err != nil {
 			m.log.Error("Secondary insertions failed", "error", err.Error())
+			return nil, err
 		}
 	}
 
