@@ -3,9 +3,9 @@ package e2e_test
 import (
 	"testing"
 
+	"github.com/Layr-Labs/eigenda-proxy/commitments"
 	"github.com/Layr-Labs/eigenda-proxy/e2e"
 	altda "github.com/ethereum-optimism/optimism/op-alt-da"
-	"github.com/ethereum-optimism/optimism/op-e2e/actions"
 	"github.com/ethereum-optimism/optimism/op-e2e/config"
 	"github.com/ethereum-optimism/optimism/op-e2e/e2eutils"
 	"github.com/ethereum-optimism/optimism/op-service/sources"
@@ -13,6 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/stretchr/testify/require"
+
+	actions "github.com/ethereum-optimism/optimism/op-e2e/actions/helpers"
 )
 
 var defaultAlloc = &e2eutils.AllocParams{PrefundTestUsers: true}
@@ -46,11 +48,12 @@ func NewL2AltDA(t actions.Testing, daHost string, altDA bool) *L2AltDA {
 		ChannelTimeout:      120,
 		L1BlockTime:         12,
 		UseAltDA:            true,
+		AllocType:           config.AllocTypeAltDA,
 	}
 
 	log := testlog.Logger(t, log.LvlDebug)
 
-	config.DeployConfig.DACommitmentType = altda.GenericCommitmentString
+	// config.DeployConfig.DACommitmentType = altda.GenericCommitmentString
 	dp := e2eutils.MakeDeployParams(t, p)
 	dp.DeployConfig.DAChallengeProxy = common.Address{0x42}
 	sd := e2eutils.Setup(t, dp, defaultAlloc)
@@ -61,7 +64,7 @@ func NewL2AltDA(t actions.Testing, daHost string, altDA bool) *L2AltDA {
 	l1Client := miner.EthClient()
 
 	jwtPath := e2eutils.WriteDefaultJWT(t)
-	engine := actions.NewL2Engine(t, log, sd.L2Cfg, sd.RollupCfg.Genesis.L1, jwtPath)
+	engine := actions.NewL2Engine(t, log, sd.L2Cfg, jwtPath)
 	engCl := engine.EngineClient(t, sd.RollupCfg)
 
 	var storage *altda.DAClient
@@ -88,7 +91,7 @@ func NewL2AltDA(t actions.Testing, daHost string, altDA bool) *L2AltDA {
 	enabled := sd.RollupCfg.AltDAEnabled()
 	require.True(t, enabled)
 
-	sequencer := actions.NewL2Sequencer(t, log, l1F, nil, daMgr, engCl, sd.RollupCfg, 0)
+	sequencer := actions.NewL2Sequencer(t, log, l1F, miner.BlobStore(), daMgr, engCl, sd.RollupCfg, 0, nil)
 	miner.ActL1SetFeeRecipient(common.Address{'A'})
 	sequencer.ActL2PipelineFull(t)
 
@@ -124,8 +127,8 @@ func TestOptimismKeccak256Commitment(gt *testing.T) {
 	testCfg := e2e.TestConfig(useMemory())
 	testCfg.UseKeccak256ModeS3 = true
 
-	tsConfig := e2e.TestSuiteConfig(gt, testCfg)
-	proxyTS, shutDown := e2e.CreateTestSuite(gt, tsConfig)
+	tsConfig := e2e.TestSuiteConfig(testCfg)
+	proxyTS, shutDown := e2e.CreateTestSuite(tsConfig)
 	defer shutDown()
 
 	t := actions.NewDefaultTesting(gt)
@@ -166,11 +169,7 @@ func TestOptimismKeccak256Commitment(gt *testing.T) {
 	optimism.sequencer.ActL2PipelineFull(t)
 	optimism.ActL1Finalized(t)
 
-	// assert that EigenDA proxy's was written and read from
-	stat := proxyTS.Server.GetS3Stats()
-
-	require.Equal(t, 1, stat.Entries)
-	require.Equal(t, 1, stat.Reads)
+	requireDispersalRetrievalEigenDA(gt, proxyTS.Metrics.HTTPServerRequestsTotal, commitments.OptimismKeccak)
 }
 
 func TestOptimismGenericCommitment(gt *testing.T) {
@@ -178,8 +177,8 @@ func TestOptimismGenericCommitment(gt *testing.T) {
 		gt.Skip("Skipping test as INTEGRATION or TESTNET env var not set")
 	}
 
-	tsConfig := e2e.TestSuiteConfig(gt, e2e.TestConfig(useMemory()))
-	proxyTS, shutDown := e2e.CreateTestSuite(gt, tsConfig)
+	tsConfig := e2e.TestSuiteConfig(e2e.TestConfig(useMemory()))
+	proxyTS, shutDown := e2e.CreateTestSuite(tsConfig)
 	defer shutDown()
 
 	t := actions.NewDefaultTesting(gt)
@@ -220,11 +219,5 @@ func TestOptimismGenericCommitment(gt *testing.T) {
 	optimism.sequencer.ActL2PipelineFull(t)
 	optimism.ActL1Finalized(t)
 
-	// assert that EigenDA proxy's was written and read from
-
-	if useMemory() {
-		stat := proxyTS.Server.GetEigenDAStats()
-		require.Equal(t, 1, stat.Entries)
-		require.Equal(t, 1, stat.Reads)
-	}
+	requireDispersalRetrievalEigenDA(gt, proxyTS.Metrics.HTTPServerRequestsTotal, commitments.OptimismGeneric)
 }
